@@ -12,8 +12,8 @@ stratified), evaluated against the full ground-truth label column.
 | 200 | 0.699 | 0.342 | 0.988 | 0.613 | 0.996 |
 | 500 | 0.910 | 0.016 | 0.956 | 0.873 | 0.998 |
 
-**Headline:** F1 climbs from **0.676** at 10 reviews
-to **0.910** at 500 reviews — a gain of **+0.235**
+**Headline:** F1 climbs from **0.556** at 10 reviews
+to **0.910** at 500 reviews — a gain of **+0.354**
 attributable purely to additional auditor feedback, since the algorithm and
 test set are held constant.
 
