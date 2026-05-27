@@ -1,0 +1,31 @@
+{
+  "data": {
+    "source": "csv",
+    "csv_path": "journal_entries_final7_1.csv",
+    "csv_sep": ";",
+    "n_samples": 8000,
+    "data_seed": 42
+  },
+  "experiment": {
+    "strategies": [
+      "no_hitl",
+      "threshold_adjustment",
+      "preference_model",
+      "active_learning",
+      "hybrid_scoring",
+      "rule_mining"
+    ],
+    "seeds": [0, 1, 2, 3, 4],
+    "noise_rates": [0.0, 0.1, 0.2, 0.3],
+    "review_batch_size": 10,
+    "max_reviews": 200,
+    "contamination": 0.01
+  },
+  "features": {
+    "use_domain_features": true
+  },
+  "output": {
+    "results_dir": "results/experiments_real",
+    "report_path": "results/experiments_real/REPORT.md"
+  }
+}

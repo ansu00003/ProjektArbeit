@@ -92,9 +92,15 @@ class PreferenceModel:
         Returns:
             Dictionary with train and test metrics
         """
-        # Split data (simulates Year 1 train, Year 2 test)
+        # Pinning random_state so the split is the same every run — otherwise
+        # the metrics jump around. Stratify on y so we don't accidentally end
+        # up with zero anomalies in the test set (they're only ~1% of data).
+        stratify = y if (np.sum(y == 1) >= 2 and np.sum(y == 0) >= 2) else None
         X_train, X_test, y_train, y_test = train_test_split(
-            X, y, test_size=test_size
+            X, y,
+            test_size=test_size,
+            random_state=self.random_state,
+            stratify=stratify,
         )
         
         self.feature_names = X.columns.tolist()
@@ -212,53 +218,55 @@ class PreferenceModel:
 
 class FeedbackSimulator:
     """
-    Simulates auditor feedback using ground truth labels.
-    
-    Per PDF Spec: "Since real auditors are not available, feedback must be simulated.
-    The dataset already has ground truth labels, so use these to simulate
-    what an auditor would say."
+    Pretends to be the auditor by reading the ground-truth column.
+
+    Some older scripts used 'is_anomaly' instead of 'label', so we accept
+    both names. 'label' is the one we prefer.
     """
-    
-    def __init__(self, label_column: str = 'label'):
+
+    LABEL_CANDIDATES = ('label', 'is_anomaly')
+
+    def __init__(self, label_column: Optional[str] = None):
         """
-        Initialize simulator.
-        
         Args:
-            label_column: Column name containing ground truth (0=normal, 1=anomaly)
+            label_column: Set this only if you want to force a specific
+                column name. Leave it None for auto-detect.
         """
         self.label_column = label_column
-        
+
+    def _resolve_label_column(self, df: pd.DataFrame) -> Optional[str]:
+        if self.label_column and self.label_column in df.columns:
+            return self.label_column
+        for name in self.LABEL_CANDIDATES:
+            if name in df.columns:
+                return name
+        return None
+
     def simulate_feedback(self, flagged_entries: pd.DataFrame) -> pd.DataFrame:
         """
-        Simulate auditor feedback using ground truth labels.
-        
-        Per PDF Spec:
-        - If label == 1: True Positive (yes, real anomaly)
-        - If label == 0: False Positive (no, false alarm)
-        
-        Args:
-            flagged_entries: DataFrame of flagged entries (must have label column)
-            
-        Returns:
-            DataFrame with simulated feedback
+        Pretend the auditor reviewed the given entries.
+
+        label == 1 -> True Positive, label == 0 -> False Positive.
+
+        We raise instead of returning fake labels if no ground-truth column
+        is found — the old version silently labelled everything 0 and that
+        quietly broke every downstream metric.
         """
         result = flagged_entries.copy()
-        
-        if self.label_column in result.columns:
-            # Use actual ground truth
-            result['simulated_label'] = result[self.label_column].astype(int)
-            result['is_true_positive'] = result[self.label_column] == 1
-            result['feedback'] = result.apply(
-                lambda x: 'True Positive' if x[self.label_column] == 1 else 'False Positive',
-                axis=1
+        col = self._resolve_label_column(result)
+
+        if col is None:
+            raise ValueError(
+                "FeedbackSimulator: no ground-truth column found. "
+                f"Looked for any of {self.LABEL_CANDIDATES}. "
+                "Rename your label column to 'label' or pass "
+                "`label_column=...` explicitly."
             )
-        else:
-            # No ground truth - default to unknown
-            result['simulated_label'] = 0
-            result['is_true_positive'] = False
-            result['feedback'] = 'Unknown (no label column)'
-            logger.warning(f"No '{self.label_column}' column found - cannot simulate properly")
-        
+
+        result['simulated_label'] = result[col].astype(int)
+        result['is_true_positive'] = result[col] == 1
+        result['feedback'] = np.where(result[col] == 1,
+                                      'True Positive', 'False Positive')
         return result
     
     def get_feedback_summary(self, simulated: pd.DataFrame) -> Dict[str, int]:

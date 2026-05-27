@@ -190,13 +190,16 @@ class DataProcessor:
         logger.info(f"Training features: {feature_cols}")
         return df[feature_cols].fillna(0)
     
+    # Some old scripts used 'is_anomaly' instead of 'label'. Try both so we
+    # don't crash on older CSVs. Keep this list aligned with
+    # FeedbackSimulator.LABEL_CANDIDATES.
+    LABEL_CANDIDATES = ('label', 'is_anomaly')
+
     def get_label_column(self, df: pd.DataFrame) -> Optional[pd.Series]:
-        """
-        Get the ground truth label column.
-        Per PDF: column 'label' where 0=normal, 1=anomaly
-        """
-        if 'label' in df.columns:
-            return df['label']
+        """Return the ground-truth column (0 = normal, 1 = anomaly), or None."""
+        for name in self.LABEL_CANDIDATES:
+            if name in df.columns:
+                return df[name]
         return None
     
     def process_pipeline(self, filepath: str) -> Tuple[pd.DataFrame, pd.DataFrame]:

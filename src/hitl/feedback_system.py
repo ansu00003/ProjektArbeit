@@ -2,10 +2,12 @@
 Human-in-the-Loop feedback system for anomaly detection.
 """
 
+import os
 import pandas as pd
 import numpy as np
 import sqlite3
 from datetime import datetime
+from pathlib import Path
 from typing import List, Dict, Optional
 from sklearn.metrics import roc_auc_score, accuracy_score, f1_score, precision_score, recall_score
 import logging
@@ -14,23 +16,35 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+# Always store the DB inside the project folder, no matter where the script
+# is started from. Streamlit on Windows was crashing because the relative
+# path "data/feedback/..." didn't exist in its working directory.
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_DB_PATH = str(PROJECT_ROOT / "data" / "feedback" / "feedback.db")
+
+
 class FeedbackSystem:
-    """
-    Manages auditor feedback and model retraining.
-    """
-    
-    def __init__(self, db_path: str = 'data/feedback/feedback.db'):
+    """Stores auditor feedback in SQLite and computes simple metrics."""
+
+    def __init__(self, db_path: Optional[str] = None):
         """
-        Initialize feedback system.
-        
         Args:
-            db_path: Path to SQLite database for storing feedback
+            db_path: Where to store the feedback database. Leave it as None
+                and it will land inside the project folder.
         """
+        # Make sure the path is absolute, otherwise different OSes behave differently.
+        if db_path is None:
+            db_path = DEFAULT_DB_PATH
+        elif not os.path.isabs(db_path):
+            db_path = str(PROJECT_ROOT / db_path)
         self.db_path = db_path
         self._init_db()
     
     def _init_db(self):
         """Initialize database tables."""
+        parent = os.path.dirname(self.db_path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
@@ -131,68 +145,116 @@ class FeedbackSystem:
         conn.close()
         return df
     
-    def calculate_feedback_metrics(self, scores: np.ndarray = None) -> Dict[str, float]:
+    def calculate_feedback_metrics(
+        self,
+        scores: np.ndarray = None,
+        ground_truth: Optional[pd.DataFrame] = None,
+        label_column: str = "label",
+    ) -> Dict[str, float]:
         """
-        Calculate performance metrics based on feedback.
-        Now includes ROC-AUC, Accuracy, and F-score per requirements.
-        
+        Two ways to compute the metrics:
+
+        1) Feedback-only — we only see the entries the auditor reviewed,
+           so we cannot know about anomalies that were never flagged.
+           Recall, F1 and accuracy don't really make sense here, so we
+           return NaN for them and only report precision honestly.
+
+        2) Full ground-truth — pass the whole dataset (with the label
+           column) and we compute real precision / recall / F1 / accuracy
+           / FPR / ROC-AUC against everything. This is what's needed for a
+           fair before/after comparison.
+
         Args:
-            scores: Optional anomaly scores for ROC-AUC calculation
-            
-        Returns:
-            Dictionary with precision, recall, FPR, accuracy, f1, roc_auc
+            scores: anomaly scores, only used for ROC-AUC.
+            ground_truth: the full dataset with a ground-truth label column.
+                If passed, mode 2 is used.
+            label_column: name of the ground-truth column.
         """
         feedback = self.get_all_feedback()
-        
+
+        empty = {
+            'precision': 0.0, 'recall': 0.0, 'fpr': 0.0,
+            'f1_score': 0.0, 'accuracy': 0.0, 'roc_auc': 0.0,
+            'mode': 'empty',
+        }
         if len(feedback) == 0:
+            return empty
+
+        # Mode 2: we have ground truth, so real metrics are possible.
+        if ground_truth is not None and label_column in ground_truth.columns:
+            y_true = ground_truth[label_column].astype(int).to_numpy()
+            if 'prediction' in ground_truth.columns:
+                y_pred = (ground_truth['prediction'] == -1).astype(int).to_numpy()
+            else:
+                # No prediction column — assume reviewed entries are the flagged ones.
+                flagged_ids = set(feedback['entry_id'].astype(str))
+                y_pred = np.array(
+                    [str(i) in flagged_ids for i in ground_truth.index],
+                    dtype=int,
+                )
+
+            tp = int(((y_pred == 1) & (y_true == 1)).sum())
+            fp = int(((y_pred == 1) & (y_true == 0)).sum())
+            fn = int(((y_pred == 0) & (y_true == 1)).sum())
+            tn = int(((y_pred == 0) & (y_true == 0)).sum())
+
+            precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+            recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+            fpr = fp / (fp + tn) if (fp + tn) > 0 else 0.0
+            f1 = (2 * precision * recall / (precision + recall)
+                  if (precision + recall) > 0 else 0.0)
+            accuracy = (tp + tn) / len(y_true)
+
+            roc_auc = 0.0
+            if scores is not None and len(np.unique(y_true)) > 1:
+                try:
+                    roc_auc = roc_auc_score(y_true, scores)
+                except Exception as e:
+                    logger.warning(f"Could not calculate ROC-AUC: {e}")
+
             return {
-                'precision': 0.0, 'recall': 0.0, 'fpr': 0.0, 
-                'f1_score': 0.0, 'accuracy': 0.0, 'roc_auc': 0.0
+                'precision': precision, 'recall': recall, 'fpr': fpr,
+                'f1_score': f1, 'accuracy': accuracy, 'roc_auc': roc_auc,
+                'tp': tp, 'fp': fp, 'fn': fn, 'tn': tn,
+                'mode': 'full_ground_truth',
             }
-        
-        # Filter anomaly predictions
+
+        # Mode 1: only feedback is available — precision and a "review-set
+        # FP rate" are the only honest numbers we can give.
         anomalies = feedback[feedback['prediction'] == -1]
-        
         if len(anomalies) == 0:
-            return {
-                'precision': 0.0, 'recall': 0.0, 'fpr': 0.0,
-                'f1_score': 0.0, 'accuracy': 0.0, 'roc_auc': 0.0
-            }
-        
-        # Ground truth from auditor
+            return empty
+
         y_true = anomalies['auditor_label'].values
-        # Model prediction (all -1 = anomaly, treat as 1 for binary)
-        y_pred = np.ones(len(anomalies))
-        
-        # Calculate metrics
-        true_positives = (y_true == 1).sum()
-        false_positives = (y_true == 0).sum()
-        
-        precision = true_positives / (true_positives + false_positives) if (true_positives + false_positives) > 0 else 0
-        recall = precision  # Simplified - would need all positives for true recall
-        fpr = false_positives / len(anomalies) if len(anomalies) > 0 else 0
-        f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
-        
-        # Accuracy: % correctly identified
-        accuracy = true_positives / len(anomalies) if len(anomalies) > 0 else 0
-        
-        # ROC-AUC if we have confidence scores
+        true_positives = int((y_true == 1).sum())
+        false_positives = int((y_true == 0).sum())
+        n_reviewed = len(anomalies)
+
+        precision = (true_positives / (true_positives + false_positives)
+                     if (true_positives + false_positives) > 0 else 0.0)
+        # FP rate within the reviewed subset only — not the population FPR.
+        review_fp_rate = false_positives / n_reviewed if n_reviewed > 0 else 0.0
+
         roc_auc = 0.0
         if 'confidence' in anomalies.columns and anomalies['confidence'].notna().any():
             try:
                 conf_scores = anomalies['confidence'].fillna(0).values
-                if len(np.unique(y_true)) > 1:  # Need both classes
-                    roc_auc = roc_auc_score(y_true, -conf_scores)  # Negative because lower score = more anomalous
+                if len(np.unique(y_true)) > 1:
+                    roc_auc = roc_auc_score(y_true, -conf_scores)
             except Exception as e:
                 logger.warning(f"Could not calculate ROC-AUC: {e}")
-        
+
         return {
             'precision': precision,
-            'recall': recall,
-            'fpr': fpr,
-            'f1_score': f1,
-            'accuracy': accuracy,
-            'roc_auc': roc_auc
+            'recall': float('nan'),       # we don't see missed anomalies here
+            'fpr': review_fp_rate,        # only on the reviewed entries
+            'f1_score': float('nan'),     # needs real recall
+            'accuracy': float('nan'),     # needs true negatives
+            'roc_auc': roc_auc,
+            'tp': true_positives,
+            'fp': false_positives,
+            'n_reviewed': n_reviewed,
+            'mode': 'feedback_only',
         }
     
     def save_metrics(self, metrics: Dict[str, float], contamination: float):

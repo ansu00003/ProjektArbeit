@@ -1,0 +1,29 @@
+{
+  "data": {
+    "source": "csv",
+    "csv_path": "journal_entries_final7_1.csv",
+    "csv_sep": ";",
+    "n_samples": 3000,
+    "data_seed": 42
+  },
+  "experiment": {
+    "strategies": [
+      "no_hitl",
+      "preference_model",
+      "active_learning",
+      "rule_mining"
+    ],
+    "seeds": [0, 1],
+    "noise_rates": [0.0, 0.2],
+    "review_batch_size": 10,
+    "max_reviews": 80,
+    "contamination": 0.01
+  },
+  "features": {
+    "use_domain_features": true
+  },
+  "output": {
+    "results_dir": "results/experiments_real_quick",
+    "report_path": "results/experiments_real_quick/REPORT.md"
+  }
+}

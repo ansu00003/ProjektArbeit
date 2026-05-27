@@ -130,7 +130,9 @@ def main():
     
     if labels is not None:
         # Simulate feedback using ground truth
-        simulator = FeedbackSimulator(label_column='is_anomaly')
+        # No argument needed — it figures out whether the column is called
+        # 'label' or 'is_anomaly' on its own.
+        simulator = FeedbackSimulator()
         anomalies = df[df['prediction'] == -1].head(100)  # Simulate 100 reviews
         
         simulated = simulator.simulate_feedback(anomalies)

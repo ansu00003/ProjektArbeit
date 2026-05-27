@@ -19,10 +19,11 @@ data/raw/*.csv
 data/processed/*.csv
 *.db
 
-# IDE
+# IDE / tooling
 .vscode/
 .idea/
 *.swp
+.claude/
 
 # OS
 .DS_Store
